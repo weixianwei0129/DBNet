@@ -211,7 +211,7 @@ if __name__ == '__main__':
             train_mask = data['train_mask'].numpy()[i]
             concat = [img]
             for x in [dilated_segment, shrunk_segment, threshold, train_mask]:
-                x = ((x - np.min(x)) / (np.max(x) - np.min(x) + 1e-4) * 255).astype(np.uint8)
+                x = (x * 255).astype(np.uint8)
                 concat.append(np.stack([x] * 3, -1))
             concat = np.concatenate(concat, 1)
             cv2.imshow('img', concat)

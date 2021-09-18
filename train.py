@@ -17,6 +17,8 @@ from models.rescspnet import ResNetCSP
 from losses.db_loss import DBLoss
 from datasets.polygon import PolygonDataSet
 
+from post_processing.SynthResult import SynthResult, draw_boxes_on_img
+
 from common import one_cycle, color_str, norm_img
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -33,7 +35,7 @@ def concat_img(images):
 
 class Trainer(object):
     def __init__(self, opt):
-
+        self.text_out = SynthResult()
         # Specifying the disk address
         workspace = os.path.join(opt.project, opt.name)
         self.ckpt_folder = os.path.join(workspace, 'ckpt')
@@ -202,9 +204,30 @@ class Trainer(object):
         for index, data in enumerate(self.test_loader):
             data = data.to(device)
             img = data['img']
-
+            b, c, h, w = img.size()
             # forward
             predict = self.model(img)
+            if not index % round(total_num / 5):
+                images += [img[0],
+                           data['shrunk_segment'],
+                           data['threshold'],
+                           data['train_mask']]
+                self.writer.add_image(
+                    'test/img',
+                    concat_img(images),
+                    self.epoch
+                )
+                img_show = img.to('cpu').numpy()
+                pred = predict.to('cpu').numpy()
+                boxes, scores = self.text_out([[h, w]], pred, is_output_polygon=False)
+                img_show = draw_boxes_on_img(img_show.to('cpu').numpy(), boxes)
+                self.writer.add_image(
+                    'test/output',
+                    img_show,
+                    self.epoch,
+                    dataformats='HWC'
+                )
+
             loss_info = self.db_loss(
                 predict,
                 data['shrunk_segment'],
@@ -217,14 +240,7 @@ class Trainer(object):
                 loss_info['binary'].item(),
                 loss_info['threshold'].item(),
             ])
-            if not index % round(total_num / 5):
-                images += [img[0],
-                           data['shrunk_segment'],
-                           data['threshold'],
-                           data['train_mask']]
-
         loss_value = loss_collection / total_num
-        self.writer.add_image('test/img', concat_img(images), self.epoch)
         self.writer.add_scalar('test/loss/synth', loss_value[0], self.epoch)
         self.writer.add_scalar('test/loss/score', loss_value[1], self.epoch)
         self.writer.add_scalar('test/loss/binary', loss_value[2], self.epoch)

@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
-import pyclipper
+from post_processing.common import draw_boxes_on_img, norm
+from post_processing.common import get_mini_boxes, box_score_fast, dilate_polygon
 
 
 class SynthResult(object):
@@ -26,14 +27,14 @@ class SynthResult(object):
         for batch_index in range(pred.shape[0]):
             height, width = original_shapes[batch_index]
             if is_output_polygon:
-                boxes, scores = self.polygons_from_bitmap(pred[batch_index], segmentation[batch_index], width, height)
+                boxes, scores = self._polygons_from_bitmap(pred[batch_index], segmentation[batch_index], width, height)
             else:
-                boxes, scores = self.boxes_from_bitmap(pred[batch_index], segmentation[batch_index], width, height)
+                boxes, scores = self._boxes_from_bitmap(pred[batch_index], segmentation[batch_index], width, height)
             boxes_batch.append(boxes)
             scores_batch.append(scores)
         return boxes_batch, scores_batch
 
-    def polygons_from_bitmap(self, pred, _bitmap, dest_width, dest_height):
+    def _polygons_from_bitmap(self, pred, _bitmap, dest_width, dest_height):
         '''
         _bitmap: single map with shape (H, W),
             whose values are binarized as {0, 1}
@@ -79,7 +80,7 @@ class SynthResult(object):
             scores.append(score)
         return boxes, scores
 
-    def boxes_from_bitmap(self, pred, _bitmap, dest_width, dest_height):
+    def _boxes_from_bitmap(self, pred, _bitmap, dest_width, dest_height):
         '''
         _bitmap: single map with shape (H, W),
             whose values are binarized as {0, 1}
@@ -120,52 +121,6 @@ class SynthResult(object):
         return boxes, scores
 
 
-def get_mini_boxes(contour):
-    bounding_box = cv2.minAreaRect(contour)
-    points = sorted(list(cv2.boxPoints(bounding_box)), key=lambda x: x[0])
-
-    if points[1][1] > points[0][1]:
-        index_1 = 0
-        index_4 = 1
-    else:
-        index_1 = 1
-        index_4 = 0
-    if points[3][1] > points[2][1]:
-        index_2 = 2
-        index_3 = 3
-    else:
-        index_2 = 3
-        index_3 = 2
-
-    box = [points[index_1], points[index_2], points[index_3], points[index_4]]
-    return box, min(bounding_box[1])
-
-
-def box_score_fast(bitmap, _box):
-    h, w = bitmap.shape[:2]
-    box = _box.copy()
-    xmin = np.clip(np.floor(np.min(box[:, 0])).astype(int), 0, w - 1)
-    xmax = np.clip(np.ceil(np.max(box[:, 0])).astype(int), 0, w - 1)
-    ymin = np.clip(np.floor(np.min(box[:, 1])).astype(int), 0, h - 1)
-    ymax = np.clip(np.ceil(np.max(box[:, 1])).astype(int), 0, h - 1)
-
-    mask = np.zeros((ymax - ymin + 1, xmax - xmin + 1), dtype=np.uint8)
-    box[:, 0] = box[:, 0] - xmin
-    box[:, 1] = box[:, 1] - ymin
-    cv2.fillPoly(mask, box.reshape(1, -1, 2).astype(np.int32), 1)
-    return cv2.mean(bitmap[ymin:ymax + 1, xmin:xmax + 1], mask)[0]
-
-
-def dilate_polygon(box, clipper_ratio=1.5):
-    area = cv2.contourArea(box)
-    length = cv2.arcLength(box, True)
-    distance = area * clipper_ratio / length
-    offset = pyclipper.PyclipperOffset()
-    offset.AddPath(box, pyclipper.JT_ROUND, pyclipper.ET_CLOSEDPOLYGON)
-    expanded = np.array(offset.Execute(distance))
-    return expanded
-
-
 if __name__ == '__main__':
     from datasets.polygon import PolygonDataSet
 
@@ -182,7 +137,6 @@ if __name__ == '__main__':
         dataset,
         batch_size=batch_size,
     )
-    norm = lambda x: ((x - np.min(x)) / (np.max(x) - np.min(x) + 1e-4) * 255).astype(np.uint8)
     for data in loader:
         for i in range(batch_size):
             img = data['img'].numpy()[i].transpose((1, 2, 0))
@@ -190,23 +144,20 @@ if __name__ == '__main__':
             shrunk_segment = data['shrunk_segment'].numpy()[i]
             threshold = data['threshold'].numpy()[i]
             train_mask = data['train_mask'].numpy()[i]
+
+            # 确认输入图片没有问题
             concat = [img]
             for x in [dilated_segment, shrunk_segment, threshold, train_mask]:
                 x = norm(x)
                 concat.append(np.stack([x] * 3, -1))
             concat = np.concatenate(concat, 1)
+
             # 测试后处理
             pred = np.stack([shrunk_segment, threshold], axis=0)[None, ...]
             boxes, scores = post_process([[640, 640]], pred, is_output_polygon=False)
-            boxes = np.array(boxes)
-            scores = np.array(scores)
-            img = norm(img)
-            img = np.ascontiguousarray(img)
-            mask = np.zeros_like(img, np.uint8)
-            for j in range(boxes.shape[1]):
-                box = np.reshape(boxes[0, j], (1, -1, 2)).astype(int)
-                cv2.fillPoly(mask, box, (0, 0, 222))
-            img = np.clip(mask * .5 + img * .5, 0, 255).astype(np.uint8)
+
+            # 确认后处理没有问题
+            img = draw_boxes_on_img(img, boxes)
             cv2.imshow("img", img)
             cv2.imshow('concat', concat)
             cv2.waitKey(0)
