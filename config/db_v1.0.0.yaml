@@ -1,0 +1,51 @@
+model:
+  width_multiple: 0.75
+  backbone:
+    # Conv DWConv: c2, k, s, p, g, act
+    # SPP: c1, c2, k=(5, 9, 13)
+    # [module, number, args, store]
+    [
+      [ Focus, 1, [ 64, 3 ], True ], # 0 P/2
+      [ Conv, 1, [ 128, 3, 2 ], True ],# 1 P/4
+      [ BottleneckCSP, 3, [ 128 ], False ],
+      [ Conv, 1, [ 256, 3, 2 ], True ], # 3 P/8
+      [ BottleneckCSP, 3, [ 256 ], False ],
+      [ Conv, 1, [ 512, 3, 2 ] , True ], # 5 P/16
+      [ BottleneckCSP, 3, [ 512 ] , False ],
+      [ Conv, 1, [ 1024, 3, 2 ], False ], # 7 P/32
+      [ SPP, 1, [ 1024, [ 5, 9, 13 ] ], False ],
+      [ BottleneckCSP, 3, [ 1024 ], True ], # 9 P/32
+    ]
+  neck:
+    # UpSample: c1, c2, scale=2, mode='nearest', n=1, shortcut=True, g=1):
+    # [module, number, args, store]
+    [
+      [ UpSample, 1, [ [ -1, 5 ], 512, 2, 'nearest' ], False ], # 10
+      [ UpSample, 1, [ [ -1, 3 ], 128, 2, 'nearest' ], False ], # 11
+      [ UpSample, 1, [ [ -1, 1 ], 64, 2, 'nearest' ], False ], # 12
+      [ UpSample, 1, [ [ -1, 0 ], 32, 2, 'nearest' ], False ], # 13
+      [ UpSample, 1, [ [ -1 ], 16, 2, 'nearest' ], False ], # 14
+    ]
+loss:
+  loss_text:
+    type: DiceLoss
+    loss_weight: 0.7
+  loss_kernel:
+    type: DiceLoss
+    loss_weight: 0.3
+train:
+  optimizer: Adam
+  lr: 0.0032
+  lf: 0.12
+  warmup_epochs: 5
+  epoch: 600
+  batch_size: 16
+data:
+  short_size: 640
+  kernel_num: 2
+  min_scale: 0.7
+  use_mosaic: 5
+  batch_size: 2
+evaluation:
+  min_area: 16
+  kernel_num: 7
