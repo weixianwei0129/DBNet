@@ -52,6 +52,8 @@ class Trainer(object):
         self.model = torch.nn.DataParallel(self.model).to(self.device)
         self.db_loss = DBLoss()
 
+        self.loss_flag = np.inf
+
         # Load data
         train_dataset = PolygonDataSet(self.cfg.data, 'train')
         self.train_loader = DataLoader(
@@ -108,6 +110,7 @@ class Trainer(object):
 
             checkpoint = torch.load(checkpoint_path)
             self.epoch = checkpoint.get('epoch', 0)
+            self.loss_flag = checkpoint.get('loss', np.inf)
             self.minimum_loss = checkpoint.get('best_loss', np.inf)
             self.model.load_state_dict(checkpoint['state_dict'])
             self.optimizer.load_state_dict(checkpoint['optimizer'])
@@ -121,6 +124,10 @@ class Trainer(object):
         while self.epoch < self.opt.epochs:
             self._train_one_epoch()
             self.epoch += 1
+            if self.epoch % 50 == 0:
+                loss = self._do_a_test()
+                if self.epoch > 0.2 * self.opt.epochs:
+                    self._save_model(loss)
 
     def _train_one_epoch(self):
         self.model.train()
@@ -160,7 +167,7 @@ class Trainer(object):
             ])
 
             self.scaler.scale(loss_info['synth']).backward()
-            
+
             if cur_batch_size >= self.cfg.train.batch_size or index == total_num - 1:
                 # 更新优化器
                 self.scaler.step(self.optimizer)
@@ -196,7 +203,7 @@ class Trainer(object):
                                  f"{loss_value[0]:.4f}/{loss_value[1]:.4f}/" \
                                  f"{loss_value[2]:.4f}/{loss_value[3]:.4f}"
                     print(output_log)
-                
+
                 # 训练进行了一个batch
                 batch_iter += 1
                 cur_batch_size = 0
@@ -254,6 +261,24 @@ class Trainer(object):
                      f"{loss_value[0]:.4f}/{loss_value[1]:.4f}/" \
                      f"{loss_value[2]:.4f}/{loss_value[3]:.4f}"
         print(color_str(output_log, 'red'))
+        return loss_value[0].item()
+
+    def _save_model(self, loss):
+        state = dict(
+            epoch=self.epoch,
+            state_dict=self.model.state_dict(),
+            optimizer=self.optimizer.state_dict(),
+            loss=loss
+        )
+        save_path = os.path.join(self.ckpt_folder, "last.pt")
+        torch.save(state, save_path)
+        print("save a model at \n", color_str(save_path, 'yellow'))
+        if loss < self.loss_flag:
+            self.loss_flag = loss
+            save_path = os.path.join(self.ckpt_folder, "best.pt")
+            torch.save(state, save_path)
+            print(f"{color_str('update', 'yellow')} a best "
+                  f"model at \n", color_str(save_path, 'yellow'))
 
 
 def main(opt):
