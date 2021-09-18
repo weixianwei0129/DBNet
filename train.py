@@ -93,42 +93,6 @@ class Trainer(object):
         self.epoch = 0
         self.minimum_loss = np.inf
 
-    def run(self):
-        # select train type :
-        # 1. load pretrain model; 2. resume train; 3. train from scratch
-        if self.opt.pretrain:
-            pretrain_file = self.opt.weights
-            assert os.path.isfile(pretrain_file), 'Error: no pretrained weights found!'
-            checkpoint = torch.load(pretrain_file)
-            self.model.load_state_dict(checkpoint['state_dict'])
-            print(f"Fine tuning from {color_str('pretrained model : ', 'red')} "
-                  f"{color_str(pretrain_file)}")
-        elif self.opt.resume:
-            checkpoint_path = os.path.join(self.ckpt_folder, "last.pt")
-            assert os.path.isfile(checkpoint_path), \
-                f'Error: no checkpoint file found at {color_str(checkpoint_path)}'
-
-            checkpoint = torch.load(checkpoint_path)
-            self.epoch = checkpoint.get('epoch', 0)
-            self.loss_flag = checkpoint.get('loss', np.inf)
-            self.minimum_loss = checkpoint.get('best_loss', np.inf)
-            self.model.load_state_dict(checkpoint['state_dict'])
-            self.optimizer.load_state_dict(checkpoint['optimizer'])
-            print(f"{color_str('restore', 'red')} from {color_str(checkpoint_path)}")
-        else:
-            if not os.path.exists(self.ckpt_folder):
-                os.makedirs(self.ckpt_folder)
-            print(f"Train model from {color_str('scratch', 'red')} "
-                  f"and save at {color_str(self.ckpt_folder)}")
-
-        while self.epoch < self.opt.epochs:
-            self._train_one_epoch()
-            self.epoch += 1
-            if self.epoch % 50 == 0:
-                loss = self._do_a_test()
-                if self.epoch > 0.2 * self.opt.epochs:
-                    self._save_model(loss)
-
     def _train_one_epoch(self):
         self.model.train()
 
@@ -277,6 +241,43 @@ class Trainer(object):
             torch.save(state, save_path)
             print(f"{color_str('update', 'yellow')} a best "
                   f"model at ", color_str(save_path, 'yellow'))
+
+    def run(self):
+        # select train type :
+        # 1. load pretrain model; 2. resume train; 3. train from scratch
+        if self.opt.pretrain:
+            pretrain_file = self.opt.weights
+            assert os.path.isfile(pretrain_file), 'Error: no pretrained weights found!'
+            checkpoint = torch.load(pretrain_file)
+            self.model.load_state_dict(checkpoint['state_dict'])
+            print(f"Fine tuning from {color_str('pretrained model : ', 'red')} "
+                  f"{color_str(pretrain_file)}")
+        elif self.opt.resume:
+            checkpoint_path = os.path.join(self.ckpt_folder, "last.pt")
+            assert os.path.isfile(checkpoint_path), \
+                f'Error: no checkpoint file found at {color_str(checkpoint_path)}'
+
+            checkpoint = torch.load(checkpoint_path)
+            self.epoch = checkpoint.get('epoch', 0)
+            self.loss_flag = checkpoint.get('loss', np.inf)
+            self.minimum_loss = checkpoint.get('best_loss', np.inf)
+            self.model.load_state_dict(checkpoint['state_dict'])
+            self.optimizer.load_state_dict(checkpoint['optimizer'])
+            print(f"{color_str('restore', 'red')} from {color_str(checkpoint_path)}")
+        else:
+            if not os.path.exists(self.ckpt_folder):
+                os.makedirs(self.ckpt_folder)
+            print(f"Train model from {color_str('scratch', 'red')} "
+                  f"and save at {color_str(self.ckpt_folder)}")
+
+        while self.epoch < self.opt.epochs:
+            print(f"[{self.epoch} | {self.opt.epochs}]")
+            self._train_one_epoch()
+            self.epoch += 1
+            if self.epoch % 50 == 0:
+                loss = self._do_a_test()
+                if self.epoch > 0.2 * self.opt.epochs:
+                    self._save_model(loss)
 
 
 def main(opt):
