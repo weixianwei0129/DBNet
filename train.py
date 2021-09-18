@@ -134,7 +134,7 @@ class Trainer(object):
 
         batch_iter = 0
         total_num = len(self.train_loader)
-        total_batch_iters = round(total_num / self.cfg.train.batch_size)
+        total_batch_iters = round(total_num * self.cfg.data.batch_size / self.cfg.train.batch_size)
 
         # 每次更新opt需要更新这个值
         cur_batch_size = 0
@@ -221,25 +221,22 @@ class Trainer(object):
             shrunk_segment = data['shrunk_segment'].to(device)
             threshold_map = data['threshold'].to(device)
             train_mask = data['train_mask'].to(device)
-            b, c, h, w = img.size()
             # forward
             predict = self.model(img)
             if not index % round(total_num / 5):
-                images += [img[0], shrunk_segment, threshold_map, train_mask]
+                images += [
+                    img[0],
+                    shrunk_segment[0],
+                    threshold_map[0],
+                    train_mask[0],
+                    predict[0][0],
+                    predict[0][1],
+
+                ]
                 self.writer.add_image(
                     'test/img',
                     concat_img(images),
                     self.epoch
-                )
-                img_show = img.to('cpu').numpy()
-                pred = predict.to('cpu').numpy()
-                boxes, scores = self.text_out([[h, w]], pred, is_output_polygon=False)
-                img_show = draw_boxes_on_img(img_show.to('cpu').numpy(), boxes)
-                self.writer.add_image(
-                    'test/output',
-                    img_show,
-                    self.epoch,
-                    dataformats='HWC'
                 )
 
             loss_info = self.db_loss(
@@ -251,6 +248,7 @@ class Trainer(object):
                 loss_info['binary'].item(),
                 loss_info['threshold'].item(),
             ])
+
         loss_value = loss_collection / total_num
         self.writer.add_scalar('test/loss/synth', loss_value[0], self.epoch)
         self.writer.add_scalar('test/loss/score', loss_value[1], self.epoch)
@@ -272,13 +270,13 @@ class Trainer(object):
         )
         save_path = os.path.join(self.ckpt_folder, "last.pt")
         torch.save(state, save_path)
-        print("save a model at \n", color_str(save_path, 'yellow'))
+        print("save a model at ", color_str(save_path, 'yellow'))
         if loss < self.loss_flag:
             self.loss_flag = loss
             save_path = os.path.join(self.ckpt_folder, "best.pt")
             torch.save(state, save_path)
             print(f"{color_str('update', 'yellow')} a best "
-                  f"model at \n", color_str(save_path, 'yellow'))
+                  f"model at ", color_str(save_path, 'yellow'))
 
 
 def main(opt):
