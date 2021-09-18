@@ -36,6 +36,7 @@ def concat_img(images):
 class Trainer(object):
     def __init__(self, opt):
         self.text_out = SynthResult()
+        self.opt = opt
         # Specifying the disk address
         workspace = os.path.join(opt.project, opt.name)
         self.ckpt_folder = os.path.join(workspace, 'ckpt')
@@ -93,14 +94,14 @@ class Trainer(object):
     def run(self):
         # select train type :
         # 1. load pretrain model; 2. resume train; 3. train from scratch
-        if opt.pretrain:
-            pretrain_file = opt.weights
+        if self.opt.pretrain:
+            pretrain_file = self.opt.weights
             assert os.path.isfile(pretrain_file), 'Error: no pretrained weights found!'
             checkpoint = torch.load(pretrain_file)
             self.model.load_state_dict(checkpoint['state_dict'])
             print(f"Fine tuning from {color_str('pretrained model : ', 'red')} "
                   f"{color_str(pretrain_file)}")
-        elif opt.resume:
+        elif self.opt.resume:
             checkpoint_path = os.path.join(self.ckpt_folder, "last.pt")
             assert os.path.isfile(checkpoint_path), \
                 f'Error: no checkpoint file found at {color_str(checkpoint_path)}'
@@ -117,53 +118,57 @@ class Trainer(object):
             print(f"Train model from {color_str('scratch', 'red')} "
                   f"and save at {color_str(self.ckpt_folder)}")
 
-        while self.epoch < self.cfg.epochs:
+        while self.epoch < self.opt.epochs:
             self._train_one_epoch()
             self.epoch += 1
 
     def _train_one_epoch(self):
         self.model.train()
 
-        total_num = len(self.train_loader)
-
-        train_batch_size = self.cfg.train.batch_size
-        data_batch_size = self.cfg.data.batch_size
-        cur_batch_size = 0
         batch_iter = 0
+        total_num = len(self.train_loader)
+        total_batch_iters = round(total_num / self.cfg.train.batch_size)
+
+        # 每次更新opt需要更新这个值
+        cur_batch_size = 0
         loss_collection = np.zeros((4,))
 
         self.optimizer.zero_grad()
         for index, data in enumerate(self.train_loader):
-            data = data.to(device)
-            img = data['img']
+            cur_batch_size += self.cfg.data.batch_size
+            img = data['img'].to(device)
+            shrunk_segment = data['shrunk_segment'].to(device)
+            threshold_map = data['threshold'].to(device)
+            train_mask = data['train_mask'].to(device)
 
             # forward
             predict = self.model(img)
+
             # backward
             loss_info = self.db_loss(
                 predict,
-                data['shrunk_segment'],
-                data['threshold'],
-                data['train_mask']
+                shrunk_segment,
+                threshold_map,
+                train_mask
             )
-            loss = loss_info['synth']
-            self.scaler.scale(loss).backward()
 
-            if cur_batch_size >= train_batch_size or index == total_num - 1:
+            loss_collection += np.array([
+                loss_info['synth'].item(),
+                loss_info['score'].item(),
+                loss_info['binary'].item(),
+                loss_info['threshold'].item(),
+            ])
+
+            self.scaler.scale(loss_info['synth']).backward()
+            
+            if cur_batch_size >= self.cfg.train.batch_size or index == total_num - 1:
+                # 更新优化器
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
                 self.optimizer.zero_grad()
-                cur_batch_size = 0
-                batch_iter += 1
-                loss_collection += np.array([
-                    loss_info['synth'].item(),
-                    loss_info['score'].item(),
-                    loss_info['binary'].item(),
-                    loss_info['threshold'].item(),
-                ])
 
-                # Log
-                if not batch_iter % round(total_num / 5):
+                # Log 整个一次epoch,显示5次
+                if batch_iter % round(total_batch_iters / 5) == 0:
                     lr = self.optimizer.param_groups[0]['lr']
                     loss_value = loss_collection / cur_batch_size
                     loss_collection = np.zeros((4,))
@@ -173,9 +178,9 @@ class Trainer(object):
                     idx = np.random.randint(0, img.shape[0])
                     images = [
                         img[idx],
-                        data['shrunk_segment'][idx],
-                        data['threshold'][idx],
-                        data['shrunk_segment'][idx] - data['threshold'][idx],
+                        shrunk_segment[idx],
+                        threshold_map[idx],
+                        shrunk_segment[idx] - threshold_map[idx],
                         predict[idx][0],
                         predict[idx][1]
                     ]
@@ -186,13 +191,16 @@ class Trainer(object):
                     self.writer.add_scalar('train/loss/threshold', loss_value[3], step)
                     self.writer.add_scalar('train/learning_rate', lr, step)
                     output_log = f"[{time.asctime(time.localtime())}] " \
-                                 f"[{batch_iter + 1:4d}/{total_num:4d}] " \
+                                 f"[{batch_iter + 1:4d}/{total_batch_iters:4d}] " \
                                  f"Loss(synth/score/binary/threshold): " \
                                  f"{loss_value[0]:.4f}/{loss_value[1]:.4f}/" \
                                  f"{loss_value[2]:.4f}/{loss_value[3]:.4f}"
                     print(output_log)
-            else:
-                cur_batch_size += data_batch_size
+                
+                # 训练进行了一个batch
+                batch_iter += 1
+                cur_batch_size = 0
+                loss_collection = np.zeros((4,))
 
     @torch.no_grad()
     def _do_a_test(self):
@@ -202,16 +210,15 @@ class Trainer(object):
         loss_collection = np.zeros((4,))
         images = []
         for index, data in enumerate(self.test_loader):
-            data = data.to(device)
-            img = data['img']
+            img = data['img'].to(device)
+            shrunk_segment = data['shrunk_segment'].to(device)
+            threshold_map = data['threshold'].to(device)
+            train_mask = data['train_mask'].to(device)
             b, c, h, w = img.size()
             # forward
             predict = self.model(img)
             if not index % round(total_num / 5):
-                images += [img[0],
-                           data['shrunk_segment'],
-                           data['threshold'],
-                           data['train_mask']]
+                images += [img[0], shrunk_segment, threshold_map, train_mask]
                 self.writer.add_image(
                     'test/img',
                     concat_img(images),
@@ -229,10 +236,7 @@ class Trainer(object):
                 )
 
             loss_info = self.db_loss(
-                predict,
-                data['shrunk_segment'],
-                data['threshold'],
-                data['train_mask']
+                predict, shrunk_segment, threshold_map, train_mask
             )
             loss_collection += np.array([
                 loss_info['synth'].item(),
@@ -263,6 +267,7 @@ def parse_opt():
     parser.add_argument('--epochs', type=int, default=300, help='Total epoch during training.')
     parser.add_argument('--project', type=str, default='', help='Project path on disk')
     parser.add_argument('--name', type=str, default='vx.x.x', help='Name of train model')
+    parser.add_argument('--linear_lr', action='store_false', help='Whether use linear lr')
     parser.add_argument('--pretrain', action='store_true', help='Whether to use a pre-training model')
     parser.add_argument('--weights', type=str, default='xx.pt', help="Pretrain the model's path on disk")
     parser.add_argument('--resume', action='store_true',

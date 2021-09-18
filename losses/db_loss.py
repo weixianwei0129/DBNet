@@ -1,3 +1,4 @@
+import torch
 from torch import nn
 from losses.basic import OHEMLoss, L1Loss, DiceLoss
 
@@ -8,7 +9,6 @@ class DBLoss(nn.Module):
         self.alpha = alpha
         self.beta = beta
         self.k = k
-        self.sigmoid = torch.nn.Sigmoid()
         self.score_loss = OHEMLoss()  # Ls
         self.f1_loss = DiceLoss()  # Lb
         # self.f1_loss = OHEMLoss(ohem=False)  # Lb
@@ -17,12 +17,10 @@ class DBLoss(nn.Module):
     def forward(self, pred, shrunk_label, threshold_label, train_mask):
         pred_scores = pred[:, 0, ...]
         pred_threshold = pred[:, 1, ...]
-        pred_binary = self.sigmoid(self.k * (pred_scores - pred_threshold))
-
+        pred_binary = torch.sigmoid(self.k * (pred_scores - pred_threshold))
         loss_score = self.score_loss(pred_scores, shrunk_label, train_mask)
         loss_f1 = self.f1_loss(pred_binary, shrunk_label, train_mask)
         loss_threshold = self.threshold_loss(pred_threshold, threshold_label, train_mask)
-
         loss_final = self.alpha * loss_score + self.alpha * loss_f1 + self.beta * loss_threshold
 
         return dict(

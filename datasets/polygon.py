@@ -11,13 +11,13 @@ from torch.utils.data import Dataset
 from datasets.utils import get_img
 from datasets.utils import make_segment_label
 
-# train_root_dir = '/data/weixianwei/psenet/data/MSRA-TD500/'
-train_root_dir = '/Users/weixianwei/Dataset/open/MSRA-TD500/'
+train_root_dir = '/data/weixianwei/psenet/data/MSRA-TD500_v1.2.0/'
+# train_root_dir = '/Users/weixianwei/Dataset/open/MSRA-TD500/'
 train_data_dir = os.path.join(train_root_dir, 'train')
 train_gt_dir = os.path.join(train_root_dir, 'train')
 
-# test_root_dir = '/data/weixianwei/psenet/data/MSRA-TD500/'
-test_root_dir = '/Users/weixianwei/Dataset/open/MSRA-TD500/'
+test_root_dir = '/data/weixianwei/psenet/data/MSRA-TD500_v1.2.0/'
+# test_root_dir = '/Users/weixianwei/Dataset/open/MSRA-TD500/'
 test_data_dir = os.path.join(train_root_dir, 'test')
 test_gt_dir = os.path.join(train_root_dir, 'test')
 

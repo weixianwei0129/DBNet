@@ -1,8 +1,6 @@
 import torch
-from torch.nn import Module
-from torch.nn.functional import binary_cross_entropy
 from torch import nn
-
+from torch.nn import Module
 
 class L1Loss(Module):
     def __init__(self):
@@ -60,14 +58,13 @@ class OHEMLoss(Module):
             gt: shape :math:`(N, H, W)`, the target
             train_mask: shape :math:`(N, H, W)`, the mask indicates positive regions
         """
-        loss = binary_cross_entropy(pred, gt, reduction="none")
+        loss = nn.functional.binary_cross_entropy(torch.sigmoid(pred), gt, reduction="none")
 
-        positive = (gt * train_mask).byte()
+        positive = (gt * train_mask).float()
         positive_loss = loss * positive.float()
-        positive_count = positive.float().sum()
-
-        negative = ((1 - gt) * train_mask).byte()
-        negative_count = int(negative.float().sum())
+        positive_count = positive.sum()
+        negative = ((1 - gt) * train_mask).float()
+        negative_count = int(negative.sum())
         if self.ohem:
             negative_count = min(negative_count, int(positive_count * self.negative_ratio))
         negative_loss = loss * negative.float()
