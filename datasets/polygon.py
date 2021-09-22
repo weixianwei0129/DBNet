@@ -8,16 +8,17 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from datasets.utils import get_img
-from datasets.utils import make_segment_label
+from datasets.utils import get_img, letterbox
+from datasets.utils import random_color_aug, random_rotate
+from datasets.utils import make_segment_label, scale_aligned_short
 
-train_root_dir = '/data/weixianwei/psenet/data/MSRA-TD500_v1.2.0/'
-# train_root_dir = '/Users/weixianwei/Dataset/open/MSRA-TD500/'
+# train_root_dir = '/data/weixianwei/psenet/data/MSRA-TD500_v1.2.0/'
+train_root_dir = '/Users/weixianwei/Dataset/open/MSRA-TD500/'
 train_data_dir = os.path.join(train_root_dir, 'train')
 train_gt_dir = os.path.join(train_root_dir, 'train')
 
-test_root_dir = '/data/weixianwei/psenet/data/MSRA-TD500_v1.2.0/'
-# test_root_dir = '/Users/weixianwei/Dataset/open/MSRA-TD500/'
+# test_root_dir = '/data/weixianwei/psenet/data/MSRA-TD500_v1.2.0/'
+test_root_dir = '/Users/weixianwei/Dataset/open/MSRA-TD500/'
 test_data_dir = os.path.join(train_root_dir, 'test')
 test_gt_dir = os.path.join(train_root_dir, 'test')
 
@@ -25,14 +26,14 @@ img_postfix = "JPG"
 gt_postfix = "TXT"
 
 
-def get_ann(img, gt_path):
+def get_ann(img, gt_path, ph, pw):
     """
     如果img is None, 则返回像素坐标
     """
     if img is None:
         h, w = 1.0, 1.0
     else:
-        h, w = img.shape[0:2]
+        h, w = img.shape[:2]
     lines = open(gt_path, 'r').readlines()
     text_regions = []
     words = []
@@ -44,7 +45,10 @@ def get_ann(img, gt_path):
         else:
             words.append(word)
         location = [int(x) for x in sp[:-1]]
-        location = np.array(location) / ([w * 1.0, h * 1.0] * int(len(location) / 2))
+        location = np.reshape(location, (-1, 2))
+        location = location + np.array([pw, ph])
+        location = location / np.array([w, h])
+        location = location.flatten()
         text_regions.append(location)
     return text_regions, words
 
@@ -161,6 +165,13 @@ class PolygonDataSet(Dataset):
         self.gt_paths = glob.glob(gt_pattern)
         self.gt_paths.sort()
         assert len(self.gt_paths) == len(self.img_paths)
+        self.argument = "norm"
+        self.argument_method = [
+            "norm", "tradition",
+            "mosaic",
+            # "mix-up",
+            "random_crop"
+        ]
 
     def __len__(self):
         return len(self.img_paths)
@@ -169,25 +180,116 @@ class PolygonDataSet(Dataset):
 
         img_path = self.img_paths[index]
         gt_path = self.gt_paths[index]
-        img = get_img(img_path)  # (h,w,c-rgb)
-        text_regions, words = get_ann(img, gt_path)
-        img = cv2.resize(img, (self.short_size, self.short_size))
+        if self.data_type == "train":
+            self.argument = np.random.choice(self.argument_method)
+        if self.argument == "mosaic":
+            img, text_regions, words = self.mosaic(index)
+        elif self.argument == "mix-up":
+            img, text_regions, words = self.mix_up(index)
+        elif self.argument == "random_crop":
+            img, text_regions, words = self.random_crop(index)
+        else:
+            img = get_img(img_path)  # (h,w,c-rgb)
+            img, ratio, (ph, pw) = letterbox(img, self.short_size, 127.5, 32)
+            text_regions, words = get_ann(img, gt_path, ph, pw)
+            img = cv2.resize(img, (self.short_size, self.short_size))
+
         # gt mask
         shrunk_segment, train_mask, text_regions, _ = make_segment_label(img, text_regions, words, self.min_scale)
         # canvas, mask
         threshold, dilated_segment = make_border_label(img, text_regions, self.min_scale)
+
+        if self.argument == "tradition":
+            if np.random.uniform(0, 10) > 5:
+                img = random_color_aug(img)
+            collector = [img, shrunk_segment, threshold, train_mask]
+            img, shrunk_segment, threshold, train_mask = random_rotate(collector, 3)
 
         # ==========
         img = img.astype(np.float32) / 127.5 - 1
         img = np.transpose(img, (2, 0, 1))
         data = dict(
             img=torch.from_numpy(img),
-            dilated_segment=torch.from_numpy(dilated_segment),
+            # dilated_segment=torch.from_numpy(dilated_segment),
             shrunk_segment=torch.from_numpy(shrunk_segment),
             threshold=torch.from_numpy(threshold),
             train_mask=torch.from_numpy(train_mask),
         )
         return data
+
+    def mix_up(self, index):
+        indexes = np.random.choice(range(len(self.img_paths)), size=(2,)).tolist()
+        if index not in indexes:
+            indexes[0] = index
+        img1 = get_img(self.img_paths[indexes[0]])
+        texts_regions1, words1 = get_ann(img1, self.gt_paths[indexes[0]], 0, 0)
+        img1 = cv2.resize(img1, (self.short_size, self.short_size))
+        img2 = get_img(self.img_paths[indexes[1]])
+        texts_regions2, words2 = get_ann(img2, self.gt_paths[indexes[1]], 0, 0)
+        img2 = cv2.resize(img2, (self.short_size, self.short_size))
+        r = np.random.beta(32.0, 32.0)  # mix-up ratio, alpha=beta=32.0
+        img = (img1 * r + img2 * (1 - r)).astype(np.uint8)
+        return img, texts_regions1 + texts_regions2, words1 + words2
+
+    def mosaic(self, index):
+        """
+        田字格画布用a表示
+        4张图片用b表示
+
+        """
+        text_regions4 = []
+        words4 = []
+        s = self.short_size
+        xc, yc = np.random.uniform(s // 2, s * 3 // 2, size=[2, ]).astype(int)
+        indices = [index] + np.random.choice(range(len(self.img_paths)), size=(3,)).tolist()
+        for i, index in enumerate(indices):
+            img = get_img(self.img_paths[index])
+            texts_regions, words = get_ann(img, self.gt_paths[index], 0, 0)
+            img = scale_aligned_short(img, int(self.short_size * np.random.uniform(0.9, 2)), 32)
+            h, w, c = img.shape
+
+            if i == 0:  # a图的左上图, 图b右下角与中心对齐
+                img4 = np.full((s * 2, s * 2, 3), 114, dtype=np.uint8)
+                x1a, y1a, x2a, y2a = max(0, xc - w), max(0, yc - h), xc, yc
+                wa, ha = x2a - x1a, y2a - y1a
+                x1b, y1b, x2b, y2b = w - wa, h - ha, w, h
+            elif i == 1:  # a图的右上图, 图片b左下角与中心对齐
+                x1a, y1a, x2a, y2a = xc, max(0, yc - h), min(s * 2, xc + w), yc
+                wa, ha = x2a - x1a, y2a - y1a
+                x1b, y1b, x2b, y2b = 0, h - ha, min(w, wa), h
+            elif i == 2:  # a图的左下图, 图片b的右上角与中心对齐
+                x1a, y1a, x2a, y2a = max(0, xc - w), yc, xc, min(s * 2, yc + h)
+                wa, ha = x2a - x1a, y2a - y1a
+                x1b, y1b, x2b, y2b = w - wa, 0, w, min(ha, h)
+            elif i == 3:  # a图右下图, 图b的左上角与中心对齐
+                x1a, y1a, x2a, y2a = xc, yc, min(s * 2, xc + w), min(s * 2, yc + h)
+                wa, ha = x2a - x1a, y2a - y1a
+                x1b, y1b, x2b, y2b = 0, 0, min(w, wa), min(h, ha)
+            img4[y1a:y2a, x1a:x2a] = img[y1b:y2b, x1b:x2b]
+            padw = x1a - x1b
+            padh = y1a - y1b
+
+            # Labels
+            for points, word in zip(texts_regions, words):
+                num = points.shape[0] // 2
+                points = points * np.array([w, h] * num) + np.array([padw, padh] * num)
+                points = points / np.array([s * 2, s * 2] * num)
+                text_regions4.append(points)
+                words4.append(word)
+        img4 = cv2.resize(img4, (self.short_size, self.short_size))
+        return img4, text_regions4, words4
+
+    def random_crop(self, index):
+        img = get_img(self.img_paths[index])
+        h, w = img.shape[:2]
+        if min(h, w) < self.short_size:
+            text_regions, words = get_ann(img, self.gt_paths[index], 0, 0)
+        else:
+            bh = np.random.randint(0, h - self.short_size)
+            bw = np.random.randint(0, w - self.short_size)
+            img = img[bh:bh + self.short_size, bw:bw + self.short_size, :]
+            text_regions, words = get_ann(img, self.gt_paths[index], -bh, -bw)
+        return img, text_regions, words
 
 
 if __name__ == '__main__':
@@ -197,7 +299,7 @@ if __name__ == '__main__':
 
     cfg = EasyDict(yaml.safe_load(open('../config/db_v1.0.0.yaml')))
     dataset = PolygonDataSet(cfg.data, data_type='train')
-    batch_size = 2
+    batch_size = 3
     loader = DataLoader(
         dataset,
         batch_size=batch_size,
@@ -205,12 +307,11 @@ if __name__ == '__main__':
     for data in loader:
         for i in range(batch_size):
             img = data['img'].numpy()[i].transpose((1, 2, 0))
-            dilated_segment = data['dilated_segment'].numpy()[i]
             shrunk_segment = data['shrunk_segment'].numpy()[i]
             threshold = data['threshold'].numpy()[i]
             train_mask = data['train_mask'].numpy()[i]
             concat = [img]
-            for x in [dilated_segment, shrunk_segment, threshold, train_mask]:
+            for x in [shrunk_segment, threshold, train_mask]:
                 x = (x * 255).astype(np.uint8)
                 concat.append(np.stack([x] * 3, -1))
             concat = np.concatenate(concat, 1)
